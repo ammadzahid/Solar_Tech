@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { createServerClient } from '@supabase/ssr'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import crypto from 'crypto'
 import { z } from 'zod'
@@ -29,14 +29,15 @@ export async function POST(request: NextRequest) {
     const { email, password } = result.data
     const cookieStore = cookies()
 
-    // Sign in with Supabase
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          getAll() { return cookieStore.getAll() },
-          setAll(cookiesToSet) {
+          getAll() {
+            return cookieStore.getAll()
+          },
+          setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
             )
@@ -46,7 +47,8 @@ export async function POST(request: NextRequest) {
     )
 
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email, password,
+      email,
+      password,
     })
 
     if (authError || !authData.user) {
@@ -58,7 +60,6 @@ export async function POST(request: NextRequest) {
 
     const admin = getAdmin()
 
-    // Get profile + company
     const { data: profile } = await admin
       .from('profiles')
       .select('*, companies(*)')
@@ -71,7 +72,6 @@ export async function POST(request: NextRequest) {
 
     const company = profile.companies
 
-    // Skip checks for superadmin
     if (profile.role !== 'superadmin' && company) {
       if (!company.is_approved) {
         return NextResponse.json(
@@ -79,15 +79,8 @@ export async function POST(request: NextRequest) {
           { status: 403 }
         )
       }
-      if (!['active', 'pending_payment', 'pending_approval'].includes(company.subscription_status)) {
-        return NextResponse.json(
-          { ok: false, error: 'Subscription not active.' },
-          { status: 403 }
-        )
-      }
     }
 
-    // Generate session token for single device lock
     const sessionToken = crypto.randomBytes(32).toString('hex')
 
     if (company) {

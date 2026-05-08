@@ -1,173 +1,337 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
+import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 
+interface ProductModel {
+  id: string; brand: string; model_name: string
+  price_per_unit: number; unit_label: string; specs: Record<string,any>
+}
+interface Category { id: string; name: string; display_name: string; icon: string; product_models: ProductModel[] }
+
 export default function CalculatorPage() {
-  const [products, setProducts] = useState<any[]>([])
+  const router = useRouter()
+  const [categories, setCategories] = useState<Category[]>([])
+  const [loading, setLoading] = useState(true)
+  const [calculating, setCalculating] = useState(false)
+  const [result, setResult] = useState<any>(null)
+
+  // Inputs
   const [bill, setBill] = useState('')
   const [units, setUnits] = useState('')
   const [systemType, setSystemType] = useState('ongrid')
-  const [panelId, setPanelId] = useState('')
-  const [inverterId, setInverterId] = useState('')
-  const [batteryId, setBatteryId] = useState('')
   const [includeBattery, setIncludeBattery] = useState(false)
   const [backupHours, setBackupHours] = useState(4)
   const [margin, setMargin] = useState(20)
-  const [result, setResult] = useState<any>(null)
-  const [loading, setLoading] = useState(false)
+
+  // Brand+Model selection
+  const [panelBrand, setPanelBrand] = useState('')
+  const [panelModelId, setPanelModelId] = useState('')
+  const [invBrand, setInvBrand] = useState('')
+  const [invModelId, setInvModelId] = useState('')
+  const [battBrand, setBattBrand] = useState('')
+  const [battModelId, setBattModelId] = useState('')
 
   useEffect(() => {
     fetch('/api/products').then(r => r.json()).then(d => {
       if (d.ok) {
-        setProducts(d.data)
+        setCategories(d.data)
         // Set defaults
-        const panels = d.data.find((c: any) => c.name === 'solar_panel')?.product_models
-        const invs = d.data.find((c: any) => c.name === 'inverter')?.product_models
-        const batts = d.data.find((c: any) => c.name === 'battery')?.product_models
-        if (panels?.[1]) setPanelId(panels[1].id)
-        if (invs?.[0]) setInverterId(invs[0].id)
-        if (batts?.[0]) setBatteryId(batts[0].id)
+        const panels = d.data.find((c: Category) => c.name === 'solar_panel')?.product_models ?? []
+        const invs   = d.data.find((c: Category) => c.name === 'inverter')?.product_models ?? []
+        const batts  = d.data.find((c: Category) => c.name === 'battery')?.product_models ?? []
+        if (panels[2]) { setPanelBrand(panels[2].brand); setPanelModelId(panels[2].id) }
+        if (invs[2])   { setInvBrand(invs[2].brand);     setInvModelId(invs[2].id) }
+        if (batts[2])  { setBattBrand(batts[2].brand);   setBattModelId(batts[2].id) }
       }
+      setLoading(false)
     })
   }, [])
 
+  // Get unique brands per category
+  const getModels = (catName: string) =>
+    categories.find(c => c.name === catName)?.product_models ?? []
+
+  const getUniqueBrands = (catName: string) =>
+    [...new Set(getModels(catName).map(m => m.brand))]
+
+  const getModelsByBrand = (catName: string, brand: string) =>
+    getModels(catName).filter(m => m.brand === brand)
+
+  const getModel = (id: string) =>
+    categories.flatMap(c => c.product_models).find(m => m.id === id)
+
   const hasBatt = systemType === 'hybrid' || systemType === 'offgrid'
-  const panels = products.find(c => c.name === 'solar_panel')?.product_models ?? []
-  const invs = products.find(c => c.name === 'inverter')?.product_models ?? []
-  const batts = products.find(c => c.name === 'battery')?.product_models ?? []
 
   const calculate = async () => {
     if (!bill && !units) { toast.error('Bill ya units daao'); return }
-    setLoading(true)
-    const r = await fetch('/api/calculator', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        monthly_bill: bill ? parseFloat(bill) : null,
-        monthly_units: units ? parseFloat(units) : null,
-        system_type: systemType,
-        panel_model_id: panelId,
-        inverter_model_id: inverterId,
-        battery_model_id: hasBatt && includeBattery ? batteryId : null,
-        include_battery: hasBatt && includeBattery,
-        backup_hours: backupHours,
-        battery_units: 0,
-        margin_percent: margin,
-      }),
-    })
-    const d = await r.json()
-    if (d.ok) setResult(d.data)
-    else toast.error(d.error)
-    setLoading(false)
+    if (!panelModelId || !invModelId) { toast.error('Panel aur inverter select karo'); return }
+    setCalculating(true)
+    try {
+      const r = await fetch('/api/calculator', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monthly_bill:      bill ? parseFloat(bill) : null,
+          monthly_units:     units ? parseFloat(units) : null,
+          system_type:       systemType,
+          panel_model_id:    panelModelId,
+          inverter_model_id: invModelId,
+          battery_model_id:  hasBatt && includeBattery ? battModelId : null,
+          include_battery:   hasBatt && includeBattery,
+          backup_hours:      backupHours,
+          battery_units:     0,
+          margin_percent:    margin,
+        }),
+      })
+      const d = await r.json()
+      if (d.ok) setResult(d.data)
+      else toast.error(d.error)
+    } finally { setCalculating(false) }
   }
 
   const goToQuote = () => {
     if (!result) return
-    localStorage.setItem('sp_calc_result', JSON.stringify({ result, panelId, inverterId, batteryId, systemType }))
-    window.location.href = '/dashboard/quotations/new'
+    const panelModel = getModel(panelModelId)
+    const invModel   = getModel(invModelId)
+    const battModel  = battModelId ? getModel(battModelId) : null
+    localStorage.setItem('sp_calc_result', JSON.stringify({
+      result, panelId: panelModelId, inverterId: invModelId,
+      batteryId: battModelId, systemType,
+      panelName: panelModel ? `${panelModel.brand} ${panelModel.model_name}` : '',
+      invName:   invModel   ? `${invModel.brand} ${invModel.model_name}` : '',
+      battName:  battModel  ? `${battModel.brand} ${battModel.model_name}` : '',
+    }))
+    router.push('/dashboard/quotations/new')
   }
 
-  const s = (v: any) => ({ background:'#13131a', border:'1px solid #ffffff12', borderRadius:'12px', padding:'16px', marginBottom:'12px', ...v })
-  const inp = { width:'100%', padding:'10px 13px', background:'#1c1c26', border:'1px solid #ffffff15', borderRadius:'9px', fontSize:'14px', color:'white', outline:'none', boxSizing:'border-box' as const }
-  const lbl = { display:'block' as const, fontSize:'11px', fontWeight:'600' as const, color:'#6b7280', textTransform:'uppercase' as const, letterSpacing:'0.5px', marginBottom:'5px' }
+  // Styles
+  const card = (extra?: any) => ({ background:'#13131a', border:'1px solid #ffffff12', borderRadius:'14px', padding:'18px', marginBottom:'14px', ...extra })
+  const secTitle = { fontSize:'11px', fontWeight:'700' as const, color:'#6b7280', textTransform:'uppercase' as const, letterSpacing:'0.8px', marginBottom:'12px' }
+  const inp = { width:'100%', padding:'11px 14px', background:'#1c1c26', border:'1px solid #ffffff15', borderRadius:'10px', fontSize:'15px', color:'white', outline:'none', boxSizing:'border-box' as const, fontFamily:'system-ui,sans-serif' }
+
+  if (loading) return <div style={{ color:'#6b7280', fontFamily:'system-ui,sans-serif' }}>Loading products...</div>
+
+  const panelModel = getModel(panelModelId)
+  const invModel   = getModel(invModelId)
+  const battModel  = battModelId ? getModel(battModelId) : null
 
   return (
-    <div style={{ maxWidth:'700px' }}>
+    <div style={{ maxWidth:'720px', fontFamily:'system-ui,sans-serif' }}>
       <h1 style={{ fontSize:'22px', fontWeight:'800', color:'white', marginBottom:'4px' }}>Calculator</h1>
-      <p style={{ color:'#6b7280', fontSize:'13px', marginBottom:'24px' }}>Client ka bill daao — system calculate ho jaayega</p>
+      <p style={{ color:'#6b7280', fontSize:'13px', marginBottom:'22px' }}>Client ka bill daao — system calculate ho jaayega</p>
 
-      {/* Bill inputs */}
-      <div style={s({})}>
+      {/* Step 1: Bill */}
+      <div style={card()}>
+        <div style={secTitle}>Step 1 — Client ki bijli</div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px' }}>
-          <div><label style={lbl}>Bill (Rs/month)</label><input style={inp} type="number" value={bill} onChange={e => setBill(e.target.value)} placeholder="15000" /></div>
-          <div><label style={lbl}>Ya Units/month</label><input style={inp} type="number" value={units} onChange={e => setUnits(e.target.value)} placeholder="400" /></div>
+          <div>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'5px' }}>Bijli bill (Rs/month)</div>
+            <input style={inp} type="number" value={bill} onChange={e => { setBill(e.target.value); setUnits('') }} placeholder="e.g. 15,000" />
+          </div>
+          <div>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'5px' }}>Ya units/month</div>
+            <input style={inp} type="number" value={units} onChange={e => { setUnits(e.target.value); setBill('') }} placeholder="e.g. 400" />
+          </div>
         </div>
       </div>
 
-      {/* System type */}
-      <div style={s({})}>
-        <label style={lbl}>System Type</label>
+      {/* Step 2: System type */}
+      <div style={card()}>
+        <div style={secTitle}>Step 2 — System type</div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
           {[
-            { k:'ongrid', label:'On-Grid', desc:'Net metering, no battery' },
-            { k:'hybrid', label:'Hybrid', desc:'Battery backup included' },
-            { k:'offgrid', label:'Off-Grid', desc:'No WAPDA needed' },
-            { k:'tubwell', label:'Tube Well', desc:'ZTBL loan available' },
+            { k:'ongrid',  icon:'🔗', name:'On-Grid',    desc:'Net metering — WAPDA connected, no battery. Sabse sasta.' },
+            { k:'hybrid',  icon:'⚡', name:'Hybrid',     desc:'Battery backup — load shedding mein bhi bijli.' },
+            { k:'offgrid', icon:'🏝️', name:'Off-Grid',   desc:'WAPDA nahi chahiye. Sirf battery se.' },
+            { k:'tubwell', icon:'💧', name:'Tube Well',  desc:'DC pump directly panel se. ZTBL loan milta hai.' },
           ].map(t => (
-            <div key={t.k} onClick={() => { setSystemType(t.k); setIncludeBattery(t.k === 'hybrid' || t.k === 'offgrid') }} style={{
-              padding:'12px', borderRadius:'10px', cursor:'pointer',
-              border: systemType === t.k ? '1.5px solid #f5a623' : '1px solid #ffffff12',
-              background: systemType === t.k ? '#f5a62312' : '#1c1c26'
+            <div key={t.k} onClick={() => {
+              setSystemType(t.k)
+              setIncludeBattery(t.k === 'hybrid' || t.k === 'offgrid')
+            }} style={{
+              padding:'13px', borderRadius:'11px', cursor:'pointer', transition:'all .15s',
+              border: systemType===t.k ? '1.5px solid #f5a623' : '1px solid #ffffff12',
+              background: systemType===t.k ? '#f5a62312' : '#1c1c26',
             }}>
-              <div style={{ fontSize:'12px', fontWeight:'700', color:'white' }}>{t.label}</div>
-              <div style={{ fontSize:'10px', color:'#6b7280', marginTop:'2px' }}>{t.desc}</div>
+              <div style={{ fontSize:'18px', marginBottom:'5px' }}>{t.icon}</div>
+              <div style={{ fontSize:'12px', fontWeight:'700', color:'white' }}>{t.name}</div>
+              <div style={{ fontSize:'10px', color:'#6b7280', marginTop:'2px', lineHeight:'1.4' }}>{t.desc}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Panel */}
-      <div style={s({})}>
-        <label style={lbl}>Panel Brand</label>
-        <div style={{ display:'flex', gap:'8px', overflowX:'auto', paddingBottom:'4px' }}>
-          {panels.map((p: any) => (
-            <div key={p.id} onClick={() => setPanelId(p.id)} style={{
-              flexShrink:0, padding:'10px 14px', borderRadius:'10px', cursor:'pointer',
-              border: panelId === p.id ? '1.5px solid #f5a623' : '1px solid #ffffff12',
-              background: panelId === p.id ? '#f5a62312' : '#1c1c26'
-            }}>
-              <div style={{ fontSize:'12px', fontWeight:'700', color:'white' }}>{p.brand}</div>
-              <div style={{ fontSize:'11px', color:'#f5a623', marginTop:'2px' }}>Rs {p.price_per_unit}/{p.unit_label.replace('per ','')}</div>
-            </div>
+      {/* Step 3: Panel — Brand then Model */}
+      <div style={card()}>
+        <div style={secTitle}>Step 3 — Solar Panel</div>
+
+        {/* Brand select */}
+        <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Brand chuno:</div>
+        <div style={{ display:'flex', gap:'7px', overflowX:'auto', paddingBottom:'4px', marginBottom:'12px', scrollbarWidth:'none' }}>
+          {getUniqueBrands('solar_panel').map(brand => (
+            <div key={brand} onClick={() => {
+              setPanelBrand(brand)
+              const firstModel = getModelsByBrand('solar_panel', brand)[0]
+              if (firstModel) setPanelModelId(firstModel.id)
+            }} style={{
+              flexShrink:0, padding:'8px 14px', borderRadius:'20px', cursor:'pointer',
+              border: panelBrand===brand ? '1.5px solid #f5a623' : '1px solid #ffffff15',
+              background: panelBrand===brand ? '#f5a62318' : '#1c1c26',
+              fontSize:'12px', fontWeight: panelBrand===brand ? '700' : '400',
+              color: panelBrand===brand ? '#f5a623' : '#9ca3af', whiteSpace:'nowrap' as const
+            }}>{brand}</div>
           ))}
         </div>
+
+        {/* Model select */}
+        {panelBrand && (
+          <>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Model chuno:</div>
+            <div style={{ display:'grid', gap:'7px' }}>
+              {getModelsByBrand('solar_panel', panelBrand).map(m => (
+                <div key={m.id} onClick={() => setPanelModelId(m.id)} style={{
+                  padding:'11px 14px', borderRadius:'10px', cursor:'pointer',
+                  border: panelModelId===m.id ? '1.5px solid #f5a623' : '1px solid #ffffff10',
+                  background: panelModelId===m.id ? '#f5a62310' : '#1c1c26',
+                  display:'flex', justifyContent:'space-between', alignItems:'center'
+                }}>
+                  <div>
+                    <div style={{ fontSize:'13px', fontWeight:'600', color:'white' }}>{m.model_name}</div>
+                    <div style={{ fontSize:'11px', color:'#6b7280', marginTop:'2px' }}>
+                      {m.specs?.wattage && `${m.specs.wattage}W`}
+                      {m.specs?.type && ` · ${m.specs.type}`}
+                      {m.specs?.efficiency && ` · ${m.specs.efficiency} efficiency`}
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right', flexShrink:0 }}>
+                    <div style={{ fontSize:'13px', fontWeight:'700', color:'#f5a623' }}>Rs {m.price_per_unit}</div>
+                    <div style={{ fontSize:'10px', color:'#374151' }}>{m.unit_label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Inverter */}
-      <div style={s({})}>
-        <label style={lbl}>Inverter Brand</label>
-        <div style={{ display:'flex', gap:'8px', overflowX:'auto', paddingBottom:'4px' }}>
-          {invs.map((p: any) => (
-            <div key={p.id} onClick={() => setInverterId(p.id)} style={{
-              flexShrink:0, padding:'10px 14px', borderRadius:'10px', cursor:'pointer',
-              border: inverterId === p.id ? '1.5px solid #f5a623' : '1px solid #ffffff12',
-              background: inverterId === p.id ? '#f5a62312' : '#1c1c26'
-            }}>
-              <div style={{ fontSize:'12px', fontWeight:'700', color:'white' }}>{p.brand}</div>
-              <div style={{ fontSize:'11px', color:'#f5a623', marginTop:'2px' }}>Rs {p.price_per_unit.toLocaleString()}/kW</div>
-            </div>
+      {/* Step 4: Inverter — Brand then Model */}
+      <div style={card()}>
+        <div style={secTitle}>Step 4 — Inverter</div>
+
+        <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Brand chuno:</div>
+        <div style={{ display:'flex', gap:'7px', overflowX:'auto', paddingBottom:'4px', marginBottom:'12px', scrollbarWidth:'none' }}>
+          {getUniqueBrands('inverter').map(brand => (
+            <div key={brand} onClick={() => {
+              setInvBrand(brand)
+              // Auto-select matching kW model if possible
+              const models = getModelsByBrand('inverter', brand)
+              const first = models[0]
+              if (first) setInvModelId(first.id)
+            }} style={{
+              flexShrink:0, padding:'8px 14px', borderRadius:'20px', cursor:'pointer',
+              border: invBrand===brand ? '1.5px solid #f5a623' : '1px solid #ffffff15',
+              background: invBrand===brand ? '#f5a62318' : '#1c1c26',
+              fontSize:'12px', fontWeight: invBrand===brand ? '700' : '400',
+              color: invBrand===brand ? '#f5a623' : '#9ca3af', whiteSpace:'nowrap' as const
+            }}>{brand}</div>
           ))}
         </div>
+
+        {invBrand && (
+          <>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Model chuno:</div>
+            <div style={{ display:'grid', gap:'7px' }}>
+              {getModelsByBrand('inverter', invBrand).map(m => (
+                <div key={m.id} onClick={() => setInvModelId(m.id)} style={{
+                  padding:'11px 14px', borderRadius:'10px', cursor:'pointer',
+                  border: invModelId===m.id ? '1.5px solid #f5a623' : '1px solid #ffffff10',
+                  background: invModelId===m.id ? '#f5a62310' : '#1c1c26',
+                  display:'flex', justifyContent:'space-between', alignItems:'center'
+                }}>
+                  <div>
+                    <div style={{ fontSize:'13px', fontWeight:'600', color:'white' }}>{m.model_name}</div>
+                    <div style={{ fontSize:'11px', color:'#6b7280', marginTop:'2px', display:'flex', gap:'8px' }}>
+                      {m.specs?.type && <span style={{ color: m.specs.type.includes('Hybrid') ? '#00d97e' : '#6b7280' }}>{m.specs.type}</span>}
+                      {m.specs?.efficiency && <span>{m.specs.efficiency} eff</span>}
+                      {m.specs?.warranty_years && <span>{m.specs.warranty_years}yr warranty</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right', flexShrink:0 }}>
+                    <div style={{ fontSize:'13px', fontWeight:'700', color:'#f5a623' }}>Rs {m.price_per_unit.toLocaleString()}</div>
+                    <div style={{ fontSize:'10px', color:'#374151' }}>{m.unit_label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Battery */}
+      {/* Step 5: Battery (conditional) */}
       {hasBatt && (
-        <div style={s({})}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
-            <label style={{ ...lbl, marginBottom:0 }}>Battery</label>
+        <div style={card()}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
+            <div style={secTitle}>Step 5 — Battery</div>
             <div onClick={() => setIncludeBattery(!includeBattery)} style={{
-              width:'40px', height:'22px', borderRadius:'11px', cursor:'pointer',
-              background: includeBattery ? '#f5a623' : '#374151', position:'relative', transition:'all .2s'
+              width:'42px', height:'24px', borderRadius:'12px', cursor:'pointer',
+              background: includeBattery ? '#f5a623' : '#374151', position:'relative', transition:'all .2s', flexShrink:0
             }}>
-              <div style={{ position:'absolute', top:'3px', left: includeBattery ? '21px' : '3px', width:'16px', height:'16px', borderRadius:'50%', background:'white', transition:'all .2s' }} />
+              <div style={{ position:'absolute', top:'3px', left: includeBattery ? '21px' : '3px', width:'18px', height:'18px', borderRadius:'50%', background:'white', transition:'all .2s' }} />
             </div>
           </div>
+
           {includeBattery && (
             <>
-              <div style={{ display:'flex', gap:'8px', overflowX:'auto', paddingBottom:'4px', marginBottom:'10px' }}>
-                {batts.map((p: any) => (
-                  <div key={p.id} onClick={() => setBatteryId(p.id)} style={{
-                    flexShrink:0, padding:'10px 14px', borderRadius:'10px', cursor:'pointer',
-                    border: batteryId === p.id ? '1.5px solid #f5a623' : '1px solid #ffffff12',
-                    background: batteryId === p.id ? '#f5a62312' : '#1c1c26'
-                  }}>
-                    <div style={{ fontSize:'12px', fontWeight:'700', color:'white' }}>{p.brand}</div>
-                    <div style={{ fontSize:'11px', color:'#f5a623', marginTop:'2px' }}>Rs {p.price_per_unit.toLocaleString()}</div>
-                  </div>
+              <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Brand chuno:</div>
+              <div style={{ display:'flex', gap:'7px', overflowX:'auto', paddingBottom:'4px', marginBottom:'12px', scrollbarWidth:'none' }}>
+                {getUniqueBrands('battery').map(brand => (
+                  <div key={brand} onClick={() => {
+                    setBattBrand(brand)
+                    const first = getModelsByBrand('battery', brand)[0]
+                    if (first) setBattModelId(first.id)
+                  }} style={{
+                    flexShrink:0, padding:'8px 14px', borderRadius:'20px', cursor:'pointer',
+                    border: battBrand===brand ? '1.5px solid #f5a623' : '1px solid #ffffff15',
+                    background: battBrand===brand ? '#f5a62318' : '#1c1c26',
+                    fontSize:'12px', fontWeight: battBrand===brand ? '700' : '400',
+                    color: battBrand===brand ? '#f5a623' : '#9ca3af', whiteSpace:'nowrap' as const
+                  }}>{brand}</div>
                 ))}
               </div>
-              <label style={lbl}>Backup Hours</label>
-              <select style={{ ...inp }} value={backupHours} onChange={e => setBackupHours(parseInt(e.target.value))}>
+
+              {battBrand && (
+                <>
+                  <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'6px' }}>Model chuno:</div>
+                  <div style={{ display:'grid', gap:'7px', marginBottom:'12px' }}>
+                    {getModelsByBrand('battery', battBrand).map(m => (
+                      <div key={m.id} onClick={() => setBattModelId(m.id)} style={{
+                        padding:'11px 14px', borderRadius:'10px', cursor:'pointer',
+                        border: battModelId===m.id ? '1.5px solid #f5a623' : '1px solid #ffffff10',
+                        background: battModelId===m.id ? '#f5a62310' : '#1c1c26',
+                        display:'flex', justifyContent:'space-between', alignItems:'center'
+                      }}>
+                        <div>
+                          <div style={{ fontSize:'13px', fontWeight:'600', color:'white' }}>{m.model_name}</div>
+                          <div style={{ fontSize:'11px', color:'#6b7280', marginTop:'2px', display:'flex', gap:'8px' }}>
+                            {m.specs?.kwh && <span>{m.specs.kwh} kWh</span>}
+                            {m.specs?.chemistry && <span style={{ color:'#00d97e' }}>{m.specs.chemistry}</span>}
+                            {m.specs?.warranty_years && <span>{m.specs.warranty_years}yr warranty</span>}
+                            {m.specs?.cycles && <span>{m.specs.cycles} cycles</span>}
+                          </div>
+                        </div>
+                        <div style={{ textAlign:'right', flexShrink:0 }}>
+                          <div style={{ fontSize:'13px', fontWeight:'700', color:'#f5a623' }}>Rs {m.price_per_unit.toLocaleString()}</div>
+                          <div style={{ fontSize:'10px', color:'#374151' }}>{m.unit_label}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'5px' }}>Backup hours?</div>
+              <select style={{ ...inp, fontSize:'13px' }} value={backupHours} onChange={e => setBackupHours(parseInt(e.target.value))}>
                 <option value={4}>4 ghante</option>
                 <option value={6}>6 ghante</option>
                 <option value={8}>Raat bhar (8 ghante)</option>
@@ -178,54 +342,81 @@ export default function CalculatorPage() {
       )}
 
       {/* Margin */}
-      <div style={s({})}>
-        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'8px' }}>
-          <label style={{ ...lbl, marginBottom:0 }}>Tumhara Margin</label>
-          <span style={{ fontSize:'18px', fontWeight:'800', color:'#f5a623' }}>{margin}%</span>
+      <div style={card()}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+          <div style={secTitle}>Tumhara margin</div>
+          <div style={{ fontSize:'20px', fontWeight:'900', color:'#f5a623' }}>{margin}%</div>
         </div>
         <input type="range" min={10} max={35} value={margin} onChange={e => setMargin(parseInt(e.target.value))} style={{ width:'100%', accentColor:'#f5a623' }} />
+        <div style={{ display:'flex', justifyContent:'space-between', fontSize:'10px', color:'#374151', marginTop:'4px' }}>
+          <span>10% (min)</span><span>35% (max)</span>
+        </div>
       </div>
 
-      <button onClick={calculate} disabled={loading} style={{
-        width:'100%', padding:'14px', background: loading ? '#d97706' : '#f5a623',
-        border:'none', borderRadius:'12px', fontSize:'14px', fontWeight:'700',
-        color:'#000', cursor: loading ? 'not-allowed' : 'pointer', marginBottom:'16px'
+      {/* Selected summary before calculate */}
+      {panelModelId && invModelId && (
+        <div style={{ background:'#1c1c26', border:'1px solid #ffffff10', borderRadius:'11px', padding:'12px 14px', marginBottom:'14px', fontSize:'12px', color:'#6b7280' }}>
+          <span style={{ color:'white', fontWeight:'600' }}>Selected: </span>
+          {panelModel?.brand} {panelModel?.model_name}
+          {' · '}
+          {invModel?.brand} {invModel?.model_name}
+          {includeBattery && battModel && ` · ${battModel.brand} ${battModel.model_name}`}
+        </div>
+      )}
+
+      <button onClick={calculate} disabled={calculating} style={{
+        width:'100%', padding:'14px', background: calculating ? '#d97706' : '#f5a623',
+        border:'none', borderRadius:'12px', fontSize:'15px', fontWeight:'800',
+        color:'#000', cursor: calculating ? 'not-allowed' : 'pointer', marginBottom:'16px',
+        letterSpacing:'0.3px'
       }}>
-        {loading ? 'Calculating...' : 'Calculate Karo'}
+        {calculating ? 'Calculating...' : 'Calculate Karo →'}
       </button>
 
       {/* Result */}
       {result && (
-        <div style={{ background:'linear-gradient(135deg,#1c1a0f,#1a1025)', border:'1px solid #f5a62335', borderRadius:'16px', padding:'20px' }}>
-          <div style={{ fontSize:'30px', fontWeight:'900', color:'#f5a623' }}>{result.system_kw} kW</div>
-          <div style={{ fontSize:'12px', color:'#9ca3af', marginBottom:'16px' }}>{result.panel_count} panels · {result.system_type}</div>
+        <div style={{ background:'linear-gradient(135deg,#1c1a0f,#1a1025)', border:'1px solid #f5a62340', borderRadius:'16px', padding:'22px' }}>
+          <div style={{ fontSize:'32px', fontWeight:'900', color:'#f5a623' }}>{result.system_kw} kW System</div>
+          <div style={{ fontSize:'12px', color:'#9ca3af', marginBottom:'18px' }}>
+            {result.panel_count} panels · {panelModel?.model_name} · {invModel?.model_name}
+          </div>
+
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'16px' }}>
             {[
-              ['Panel Cost', result.panel_cost],
-              ['Inverter Cost', result.inverter_cost],
+              ['Panel cost',      result.panel_cost],
+              ['Inverter cost',   result.inverter_cost],
+              ...(result.battery_cost > 0 ? [['Battery cost', result.battery_cost]] : []),
               ['Cable + Structure', result.cable_cost + result.structure_cost],
-              ['Labour', result.labour_cost],
-              ...(result.battery_cost > 0 ? [['Battery Cost', result.battery_cost]] : []),
-              ['Buying Cost', result.total_buying_cost],
-            ].map(([l, v]) => (
-              <div key={l as string} style={{ background:'#ffffff08', borderRadius:'9px', padding:'10px' }}>
-                <div style={{ fontSize:'10px', color:'#6b7280' }}>{l}</div>
-                <div style={{ fontSize:'13px', fontWeight:'700', color:'white', marginTop:'2px' }}>Rs {(v as number).toLocaleString()}</div>
+              ['Labour',          result.labour_cost],
+              ['Buying cost',     result.total_buying_cost],
+            ].map(([label, val]) => (
+              <div key={label as string} style={{ background:'#ffffff08', borderRadius:'9px', padding:'11px 12px' }}>
+                <div style={{ fontSize:'10px', color:'#6b7280', marginBottom:'3px' }}>{label}</div>
+                <div style={{ fontSize:'13px', fontWeight:'700', color: label==='Buying cost' ? '#f5a623' : 'white' }}>
+                  Rs {(val as number).toLocaleString()}
+                </div>
               </div>
             ))}
           </div>
-          <div style={{ textAlign:'center', borderTop:'1px solid #ffffff15', paddingTop:'14px' }}>
-            <div style={{ fontSize:'11px', color:'#6b7280' }}>Client Ko Quote Karo</div>
-            <div style={{ fontSize:'28px', fontWeight:'900', color:'#f5a623' }}>Rs {result.client_quote.toLocaleString()}</div>
-            <div style={{ fontSize:'12px', color:'#00d97e', marginTop:'4px' }}>Margin: Rs {result.margin_amount.toLocaleString()} ({margin}%)</div>
-            <div style={{ fontSize:'11px', color:'#6b7280', marginTop:'2px' }}>Payback: {result.payback_years} saal</div>
+
+          <div style={{ borderTop:'1px solid #ffffff15', paddingTop:'16px', textAlign:'center', marginBottom:'14px' }}>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginBottom:'4px' }}>Client ko quote karo</div>
+            <div style={{ fontSize:'32px', fontWeight:'900', color:'#f5a623' }}>Rs {result.client_quote.toLocaleString()}</div>
+            <div style={{ fontSize:'13px', color:'#00d97e', marginTop:'4px' }}>
+              Tumhara margin: Rs {result.margin_amount.toLocaleString()} ({margin}%)
+            </div>
+            <div style={{ fontSize:'11px', color:'#6b7280', marginTop:'3px' }}>
+              Client payback: {result.payback_years} saal
+            </div>
           </div>
+
           <button onClick={goToQuote} style={{
-            width:'100%', marginTop:'14px', padding:'12px',
-            background:'transparent', border:'1.5px solid #f5a623',
-            borderRadius:'11px', fontSize:'13px', fontWeight:'700',
-            color:'#f5a623', cursor:'pointer'
-          }}>Is Se Quotation Banao →</button>
+            width:'100%', padding:'13px', background:'transparent',
+            border:'1.5px solid #f5a623', borderRadius:'11px',
+            fontSize:'13px', fontWeight:'700', color:'#f5a623', cursor:'pointer'
+          }}>
+            Is Se Quotation Banao →
+          </button>
         </div>
       )}
     </div>

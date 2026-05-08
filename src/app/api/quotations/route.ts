@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { createServerClient } from '@supabase/ssr'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 function getAdmin() {
@@ -16,7 +16,16 @@ async function getCurrentUser() {
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { getAll() { return cookieStore.getAll() }, setAll(s) { s.forEach(({name,value,options}) => cookieStore.set(name,value,options)) } } }
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll() },
+        setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)
+          )
+        },
+      },
+    }
   )
   const { data: { user } } = await supabase.auth.getUser()
   return user
@@ -44,7 +53,10 @@ export async function GET(request: NextRequest) {
       .range(offset, offset + limit - 1)
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
-    return NextResponse.json({ ok: true, data: { quotations: data, total: count ?? 0, page, pages: Math.ceil((count??0)/limit) } })
+    return NextResponse.json({
+      ok: true,
+      data: { quotations: data, total: count ?? 0, page, pages: Math.ceil((count ?? 0) / limit) }
+    })
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e.message }, { status: 500 })
   }
