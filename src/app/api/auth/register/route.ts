@@ -56,9 +56,6 @@ export async function POST(request: NextRequest) {
 
     const userId = authData.user.id
 
-    // Wait for trigger to create profile
-    await new Promise(r => setTimeout(r, 800))
-
     // Create company — bypass RLS using service role
     const { data: company, error: ce } = await admin
       .from('companies')
@@ -83,10 +80,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Link profile to company
+    // Use upsert (not update) so this works whether or not the
+    // handle_new_user() DB trigger has already inserted the row yet —
+    // avoids the race condition that existed with the fixed setTimeout wait.
     const { error: pe } = await admin
       .from('profiles')
-      .update({ full_name: input.full_name, phone: input.phone, company_id: company.id })
-      .eq('id', userId)
+      .upsert({
+        id:         userId,
+        email:      input.email,
+        full_name:  input.full_name,
+        phone:      input.phone,
+        company_id: company.id,
+        role:       'company_admin',
+      }, { onConflict: 'id' })
 
     if (pe) {
       await admin.auth.admin.deleteUser(userId)
